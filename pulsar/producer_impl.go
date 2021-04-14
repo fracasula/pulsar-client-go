@@ -245,6 +245,13 @@ func (p *producer) SendAsync(ctx context.Context, msg *ProducerMessage,
 	p.getPartition(msg).SendAsync(ctx, msg, callback)
 }
 
+func (p *producer) SendBatch(ctx context.Context, msgs []*ProducerMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	return p.getPartition(msgs[0]).SendBatch(ctx, msgs)
+}
+
 func (p *producer) getPartition(msg *ProducerMessage) Producer {
 	// Since partitions can only increase, it's ok if the producers list
 	// is updated in between. The numPartition is updated only after the list.

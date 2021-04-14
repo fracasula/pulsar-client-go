@@ -161,6 +161,8 @@ type Producer interface {
 	// the eventual error in publishing
 	SendAsync(context.Context, *ProducerMessage, func(MessageID, *ProducerMessage, error))
 
+	SendBatch(context.Context, []*ProducerMessage) error
+
 	// LastSequenceID get the last sequence id that was published by this producer.
 	// This represent either the automatically assigned or custom sequence id (set on the ProducerMessage) that
 	// was published and acknowledged by the broker.

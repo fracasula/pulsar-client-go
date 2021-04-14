@@ -20,6 +20,7 @@ package pulsar
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -428,6 +429,68 @@ func (p *partitionProducer) Send(ctx context.Context, msg *ProducerMessage) (Mes
 
 	wg.Wait()
 	return msgID, err
+}
+
+func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessage) error {
+	p.publishSemaphore.Acquire()
+	defer p.publishSemaphore.Release()
+
+	for _, msg := range msgs {
+		if len(msg.Payload) > int(p.cnx.GetMaxMessageSize()) {
+			publishErrors.Inc()
+			p.log.WithField("size", len(msg.Payload)).
+				WithField("properties", msg.Properties).
+				WithError(errMessageTooLarge).Error()
+			return errMessageTooLarge
+		}
+
+		deliverAt := msg.DeliverAt
+		if msg.DeliverAfter.Nanoseconds() > 0 {
+			deliverAt = time.Now().Add(msg.DeliverAfter)
+		}
+		smm := &pb.SingleMessageMetadata{
+			PayloadSize: proto.Int(len(msg.Payload)),
+		}
+		if msg.EventTime.UnixNano() != 0 {
+			smm.EventTime = proto.Uint64(internal.TimestampMillis(msg.EventTime))
+		}
+		if msg.Key != "" {
+			smm.PartitionKey = proto.String(msg.Key)
+		}
+		if msg.Properties != nil {
+			smm.Properties = internal.ConvertFromStringMap(msg.Properties)
+		}
+		var sequenceID uint64
+		if msg.SequenceID != nil {
+			sequenceID = uint64(*msg.SequenceID)
+		} else {
+			sequenceID = internal.GetAndAdd(p.sequenceIDGenerator, 1)
+		}
+		added := p.batchBuilder.Add(
+			smm, sequenceID, msg.Payload, nil,
+			msg.ReplicationClusters, deliverAt,
+		)
+		if !added {
+			return fmt.Errorf("batch full")
+		}
+	}
+
+	batchData, sequenceID, callbacks := p.batchBuilder.Flush()
+	if batchData == nil {
+		return nil
+	}
+
+	messagesPending.Inc()
+	defer messagesPending.Dec()
+
+	p.pendingQueue.Put(&pendingItem{
+		batchData:    batchData,
+		sequenceID:   sequenceID,
+		sendRequests: callbacks,
+	})
+	p.cnx.WriteData(batchData)
+
+	return nil
 }
 
 func (p *partitionProducer) SendAsync(ctx context.Context, msg *ProducerMessage,
