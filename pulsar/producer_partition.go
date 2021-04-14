@@ -466,8 +466,15 @@ func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessa
 		} else {
 			sequenceID = internal.GetAndAdd(p.sequenceIDGenerator, 1)
 		}
+		sr := &sendRequest{
+			ctx:              ctx,
+			msg:              msg,
+			callback:         func(_ MessageID, _ *ProducerMessage, _ error) {},
+			publishTime:      time.Now(),
+			flushImmediately: true,
+		}
 		added := p.batchBuilder.Add(
-			smm, sequenceID, msg.Payload, nil,
+			smm, sequenceID, msg.Payload, sr,
 			msg.ReplicationClusters, deliverAt,
 		)
 		if !added {
