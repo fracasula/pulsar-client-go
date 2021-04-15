@@ -435,6 +435,12 @@ func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessa
 	p.publishSemaphore.Acquire()
 	defer p.publishSemaphore.Release()
 
+	var (
+		retErr error
+		mx     sync.Mutex
+		wg     sync.WaitGroup
+	)
+
 	for _, msg := range msgs {
 		if len(msg.Payload) > int(p.cnx.GetMaxMessageSize()) {
 			publishErrors.Inc()
@@ -466,10 +472,19 @@ func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessa
 		} else {
 			sequenceID = internal.GetAndAdd(p.sequenceIDGenerator, 1)
 		}
+
+		wg.Add(1)
 		sr := &sendRequest{
-			ctx:              ctx,
-			msg:              msg,
-			callback:         func(_ MessageID, _ *ProducerMessage, _ error) {},
+			ctx: ctx,
+			msg: msg,
+			callback: func(_ MessageID, _ *ProducerMessage, err error) {
+				defer wg.Done()
+				if err != nil {
+					mx.Lock()
+					retErr = err
+					mx.Unlock()
+				}
+			},
 			publishTime:      time.Now(),
 			flushImmediately: true,
 		}
@@ -478,7 +493,7 @@ func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessa
 			msg.ReplicationClusters, deliverAt,
 		)
 		if !added {
-			return fmt.Errorf("batch full")
+			return fmt.Errorf("batch full (TODO flush and create a new batch)") // @TODO
 		}
 	}
 
@@ -497,7 +512,9 @@ func (p *partitionProducer) SendBatch(ctx context.Context, msgs []*ProducerMessa
 	})
 	p.cnx.WriteData(batchData)
 
-	return nil
+	wg.Wait()
+
+	return retErr
 }
 
 func (p *partitionProducer) SendAsync(ctx context.Context, msg *ProducerMessage,
